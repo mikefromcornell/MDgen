@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MDgen — Images &amp; Docs to AI-ready Markdown, free &amp; private</title>
+  <meta name="description" content="Paste, drop or pick an image, PDF, DOCX or CSV and get clean, token-efficient Markdown for ChatGPT, Claude or Gemini. 100% free, runs in your browser — your files never leave your device." />
+  <meta name="theme-color" content="#0d1117" />
+  <meta property="og:title" content="MDgen — Images &amp; Docs to AI-ready Markdown" />
+  <meta property="og:description" content="Screenshot → clean Markdown in seconds. Free, private, in-browser OCR + optional AI vision (BYOK)." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="assets/og-image.png" />
+  <meta name="robots" content="index,follow" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://generativelanguage.googleapis.com https://api.openai.com https://tessdata.projectnaptha.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" href="assets/icon-192.png" />
+  <link rel="apple-touch-icon" href="assets/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- vendored libraries: no CDN, works fully offline (see vendor/LICENSES.md) -->
+  <script src="vendor/tesseract/tesseract.min.js" defer></script>
+  <script src="vendor/marked/marked.umd.js" defer></script>
+  <script src="vendor/dompurify/purify.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#editor">Skip to editor</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="var(--accent)"/><path d="M8 22V10l5 7 5-7v12" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 15v7m0 0-2.5-3M22 22l2.5-3" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h1>MDgen</h1>
+      <span class="tagline">images &amp; docs → AI-ready Markdown</span>
+    </div>
+
+    <div class="engine-switch" role="radiogroup" aria-label="Conversion engine">
+      <label class="seg">
+        <input type="radio" name="engine" id="engineLocal" value="local" checked />
+        <span>Local OCR <em class="badge badge-private" title="Runs entirely on this device">private</em></span>
+      </label>
+      <label class="seg">
+        <input type="radio" name="engine" id="engineAI" value="ai" />
+        <span>AI Vision <em class="badge">BYOK</em></span>
+      </label>
+    </div>
+
+    <div class="top-actions">
+      <button id="helpBtn" class="icon-btn" aria-label="Help and privacy" title="Help &amp; privacy">?</button>
+      <button id="settingsBtn" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <div id="byokBanner" class="byok-banner" hidden role="note">
+    ⚠ AI Vision sends this image to <strong id="byokProviderName">Google</strong> using <em>your</em> API key. Your key is stored only in this browser. On Gemini's free tier, Google may use submitted data to improve its products. <button id="byokDismiss" class="link-btn">Got it</button>
+  </div>
+
+  <main>
+    <!-- ============ DROP ZONE ============ -->
+    <section id="dropCard" class="drop-card" aria-label="File input">
+      <div class="drop-inner">
+        <p class="drop-title">📋 Paste <kbd>Ctrl</kbd>+<kbd>V</kbd> &nbsp;·&nbsp; drop files &nbsp;·&nbsp; <button id="browseBtn" class="link-btn">browse</button></p>
+        <p class="drop-sub">PNG · JPG · WEBP · GIF · BMP · PDF · DOCX · TXT · CSV — batch OK, everything stays on your device</p>
+        <p class="drop-hint" id="pasteHint" hidden>Pasting isn't available on most mobile browsers — tap <strong>browse</strong> instead.</p>
+      </div>
+      <input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.docx,.txt,.csv" multiple hidden />
+    </section>
+
+    <!-- ============ QUEUE / PROGRESS ============ -->
+    <section id="queueSection" class="queue" hidden aria-label="Conversion queue">
+      <div class="queue-head">
+        <div class="progress" aria-hidden="true"><div id="overallProgress" class="progress-bar"></div></div>
+        <span id="queueStatus" role="status">Working…</span>
+        <button id="cancelBtn" class="btn btn-ghost">Cancel</button>
+      </div>
+      <ul id="queueList" class="queue-list"></ul>
+    </section>
+
+    <!-- ============ STUDIO ============ -->
+    <section id="studio" class="studio" hidden aria-label="Markdown studio">
+      <div id="fileChips" class="file-chips" role="tablist" aria-label="Converted files"></div>
+
+      <div class="studio-grid">
+        <aside class="preview-pane" aria-label="Source preview">
+          <div id="thumbWrap" class="thumb-wrap">—</div>
+          <div id="pageNav" class="page-nav" hidden>
+            <button id="pagePrev" class="btn btn-ghost" aria-label="Previous page">‹</button>
+            <span id="pageLabel">Page 1/1</span>
+            <button id="pageNext" class="btn btn-ghost" aria-label="Next page">›</button>
+          </div>
+          <p class="meta-line" id="sourceMeta"></p>
+        </aside>
+
+        <div class="editor-pane">
+          <div class="toolbar">
+            <input id="titleInput" class="title-input" type="text" placeholder="Title…" aria-label="Document title" />
+            <label class="switch"><input type="checkbox" id="fmToggle" checked /> <span>front&nbsp;matter</span></label>
+            <select id="promptSelect" class="select" aria-label="Insert a prompt template">
+              <option value="">＋ prompt…</option>
+              <option>Summarize this document in 5 bullets and list any action items. The document:</option>
+              <option>Extract all tables from this document as CSV. The document:</option>
+              <option>Turn this document into flashcards (Q/A list) for Anki. The document:</option>
+              <option>Find every action item with owner and deadline. The document:</option>
+              <option>Explain this document like I'm five. The document:</option>
+              <option>Explain the code in this document and suggest improvements. The document:</option>
+            </select>
+          </div>
+
+          <div class="tabs" role="tablist" aria-label="Output view">
+            <button id="tabEdit" class="tab active" role="tab" aria-selected="true">Markdown</button>
+            <button id="tabPreview" class="tab" role="tab" aria-selected="false">Preview</button>
+          </div>
+          <textarea id="editor" class="editor" spellcheck="false" aria-label="Markdown editor"></textarea>
+          <div id="preview" class="md-preview" hidden></div>
+
+          <div class="actions">
+            <button id="copyBtn" class="btn btn-primary" title="Ctrl/Cmd+Shift+C">Copy Markdown</button>
+            <button id="downloadBtn" class="btn">Download .md</button>
+            <div class="menu-wrap">
+              <button id="moreBtn" class="btn" aria-haspopup="true" aria-expanded="false">More ▾</button>
+              <div id="moreMenu" class="menu" hidden role="menu">
+                <button id="copyTextBtn" role="menuitem">Copy plain text</button>
+                <button id="copyHTMLBtn" role="menuitem">Copy as HTML</button>
+                <button id="rerunAIBtn" role="menuitem">Re-run with AI Vision</button>
+                <button id="shareLinkBtn" role="menuitem">Copy share link (#md=)</button>
+                <button id="resetBtn" role="menuitem">Convert another file</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="stats" aria-live="polite">
+            <span id="statTokens">~0 tokens</span> · <span id="statChars">0 chars</span> · <span id="statWords">0 words</span>
+            <span id="statSaved" class="stat-saved" hidden></span>
+            <span id="statConf" class="stat-conf" hidden></span>
+          </div>
+
+          <div class="cleanup">
+            <span class="cleanup-label">Cleanup:</span>
+            <button id="btnHeadings" class="chip">Fix headings</button>
+            <button id="btnLists" class="chip">Normalize lists</button>
+            <button id="btnTables" class="chip">Tidy tables</button>
+            <button id="btnDehyph" class="chip">De-hyphenate</button>
+            <button id="btnBlank" class="chip">Trim blank lines</button>
+            <button id="btnCode" class="chip">Wrap code</button>
+            <button id="btnCompact" class="chip chip-strong" title="Strip whitespace & minify tables while keeping valid Markdown">⚡ Compact for tokens</button>
+          </div>
+
+          <div class="chunker">
+            <span class="cleanup-label">Split:</span>
+            <select id="chunkSelect" class="select" aria-label="Chunk size">
+              <option value="0">no split</option>
+              <option value="8000">8k tokens</option>
+              <option value="32000">32k tokens</option>
+              <option value="128000">128k tokens</option>
+              <option value="custom">custom…</option>
+            </select>
+            <input id="chunkCustom" class="select chunk-custom" type="number" min="500" step="500" placeholder="tokens" hidden aria-label="Custom chunk size in tokens" />
+            <label class="switch" title="Carry the last paragraph into the next chunk for context"><input type="checkbox" id="chunkOverlap" checked /> <span>overlap</span></label>
+            <span id="chunkNav" class="chunk-nav"></span>
+            <button id="chunkZipBtn" class="chip" hidden>Download parts (.zip)</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RECENT ============ -->
+    <section id="recentSection" class="recent" hidden aria-label="Recent conversions">
+      <div class="recent-head">
+        <h2>Recent <span class="badge badge-private" title="Stored in IndexedDB on this device only">this device only</span></h2>
+        <input id="recentSearch" class="select" type="search" placeholder="search…" aria-label="Search recent conversions" />
+        <button id="recentClear" class="btn btn-ghost">Clear all</button>
+      </div>
+      <ul id="recentList" class="recent-list"></ul>
+    </section>
+
+    <footer class="foot">
+      <p>MDgen is <strong>free forever</strong>: static site, no accounts, no tracking, no server. Default engine is fully offline OCR — your images never leave this device. <a href="https://github.com/mikefromcornell/MDgen" rel="noopener">Source &amp; docs</a></p>
+    </footer>
+  </main>
+
+  <!-- ============ DRAG OVERLAY ============ -->
+  <div id="dropOverlay" class="drop-overlay" hidden><div>Drop to convert ⇩</div></div>
+
+  <!-- ============ SETTINGS MODAL ============ -->
+  <dialog id="settingsModal" class="modal" aria-labelledby="settingsTitle">
+    <h2 id="settingsTitle">Settings</h2>
+
+    <fieldset>
+      <legend>Default engine</legend>
+      <label class="radio-row"><input type="radio" name="setEngine" id="setEngineLocal" value="local" checked /> Local OCR — private, offline (Tesseract.js)</label>
+      <label class="radio-row"><input type="radio" name="setEngine" id="setEngineAI" value="ai" /> AI Vision — best for handwriting / complex layout</label>
+      <div class="field-row" id="providerRow">
+        <label>AI provider
+          <select id="setProvider" class="select">
+            <option value="gemini">Google Gemini (free tier)</option>
+            <option value="openai">OpenAI (paid)</option>
+          </select>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>API keys <span class="badge badge-private">stored only on this device</span></legend>
+      <div class="field-row">
+        <label>Gemini key
+          <input id="geminiKey" class="select mono" type="password" autocomplete="off" placeholder="AIza…" />
+        </label>
+        <label>Model
+          <input id="geminiModel" class="select mono" type="text" value="gemini-2.5-flash" />
+        </label>
+      </div>
+      <div class="field-row">
+        <label>OpenAI key
+          <input id="openaiKey" class="select mono" type="password" autocomplete="off" placeholder="sk-…" />
+        </label>
+        <label>Model
+          <input id="openaiModel" class="select mono" type="text" value="gpt-4o-mini" />
+        </label>
+      </div>
+      <div class="btn-row">
+        <button id="testKeyBtn" class="btn">Test key</button>
+        <button id="clearKeysBtn" class="btn btn-ghost">Clear keys</button>
+      </div>
+      <p class="fine-print">Get a free Gemini key at aistudio.google.com — the free tier needs no credit card. Keys live in <code>localStorage</code>, calls go browser → provider directly. Gemini free tier data may be used by Google for training.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>OCR &amp; output</legend>
+      <div class="field-row">
+        <label>Language
+          <select id="setLang" class="select">
+            <option value="eng" selected>English (bundled, offline)</option>
+            <option value="spa">Spanish ↓</option>
+            <option value="fra">French ↓</option>
+            <option value="deu">German ↓</option>
+            <option value="ita">Italian ↓</option>
+            <option value="por">Portuguese ↓</option>
+          </select>
+        </label>
+        <label>Theme
+          <select id="setTheme" class="select">
+            <option value="auto" selected>Auto</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+      </div>
+      <label class="switch"><input type="checkbox" id="setDownscale" checked /> <span>Downscale huge images (&gt;2600px) for speed</span></label>
+      <label class="switch"><input type="checkbox" id="setFM" checked /> <span>Add YAML front matter by default</span></label>
+      <p class="fine-print">↓ = language pack downloads once from the tessdata mirror, then works offline.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Data</legend>
+      <button id="clearHistoryBtn" class="btn btn-ghost">Clear conversion history on this device</button>
+    </fieldset>
+
+    <div class="btn-row">
+      <button id="saveSettingsBtn" class="btn btn-primary">Save</button>
+      <button id="closeSettingsBtn" class="btn">Close</button>
+    </div>
+  </dialog>
+
+  <!-- ============ HELP MODAL ============ -->
+  <dialog id="helpModal" class="modal" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Help &amp; privacy</h2>
+    <div class="help-body">
+      <h3>Shortcuts</h3>
+      <ul>
+        <li><kbd>Ctrl/Cmd</kbd>+<kbd>V</kbd> paste image anywhere on the page</li>
+        <li><kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> copy Markdown</li>
+        <li><kbd>Ctrl/Cmd</kbd>+<kbd>K</kbd> convert another (reset)</li>
+        <li><kbd>Esc</kbd> cancel running job / close dialog</li>
+      </ul>
+      <h3>Which engine?</h3>
+      <ul>
+        <li><strong>Local OCR</strong> — screenshots, documents, terminal output, articles. Free, instant, <em>nothing leaves your device</em>.</li>
+        <li><strong>AI Vision (BYOK)</strong> — handwriting, complex tables, charts, diagrams. Uses your own Gemini key (free tier) or OpenAI key; the image is sent to that provider.</li>
+      </ul>
+      <h3>Accuracy tips</h3>
+      <ul>
+        <li>Crop to the content; MDgen auto-upscales small text and boosts contrast before OCR.</li>
+        <li>Low OCR confidence? MDgen shows it — retry with AI Vision in one click.</li>
+        <li>Use <em>Compact for tokens</em> before pasting into an LLM to cut tokens ~25%.</li>
+      </ul>
+      <h3>Privacy</h3>
+      <ul>
+        <li>No accounts, no cookies, no analytics, no server. History lives in your browser's IndexedDB.</li>
+        <li>AI keys never leave this browser — calls go directly to Google/OpenAI.</li>
+      </ul>
+    </div>
+    <div class="btn-row"><button id="closeHelpBtn" class="btn btn-primary">Close</button></div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <noscript><p class="noscript">MDgen needs JavaScript — it runs 100% in your browser, for free.</p></noscript>
+</body>
+</html>
