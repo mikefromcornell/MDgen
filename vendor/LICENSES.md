@@ -20,6 +20,7 @@ relaxed-SIMD engines (we do not claim relaxed-SIMD speedups).
 | JSZip | 3.10.2 | `jszip/jszip.min.js` | MIT |
 | marked | 18.0.12 | `marked/marked.umd.js` | MIT |
 | DOMPurify | 3.4.15 | `dompurify/purify.min.js` | Apache-2.0 / MPL-2.0 |
+| foliate-js (MOBI PalmDOC logic) | main (MIT) | logic copied into `app.js` (decompressPalmDOC, trailing-entry stripping) — not a separate vendored file | MIT |
 
 To upgrade: download the package tarball from npm / the project release page,
 replace the files above (keep filenames), bump the version in this table, and

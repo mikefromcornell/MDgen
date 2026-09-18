@@ -618,7 +618,7 @@ const DEFAULTS = {
   geminiModel: 'gemini-2.5-flash', openaiModel: 'gpt-4o-mini',
   lang: 'eng', theme: 'auto', downscale: true, frontMatter: true,
 };
-const MAX_FILE_MB = 15;
+const MAX_FILE_MB = 50;
 
 /* ----------------------------- tiny DOM utils ----------------------------- */
 const $ = id => document.getElementById(id);
@@ -1061,6 +1061,254 @@ async function convertDOCXFile(file, onProgress) {
   return { raw: md, md, conf: null, engine: 'docx' };
 }
 
+async function convertEPUBFile(file, onProgress) {
+  await injectScript(V.jszip);
+  onProgress({ status: 'unzipping EPUB', progress: 0.1 });
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  // find container.xml
+  let containerFile = zip.file('META-INF/container.xml');
+  if (!containerFile) {
+    const key = Object.keys(zip.files).find(k => k.toLowerCase().endsWith('container.xml'));
+    if (key) containerFile = zip.file(key);
+  }
+  if (!containerFile) throw new Error('Invalid EPUB: META-INF/container.xml not found');
+  const containerText = await containerFile.async('text');
+  const containerDoc = new DOMParser().parseFromString(containerText, 'application/xml');
+  const rootfileEl = containerDoc.querySelector('rootfile');
+  if (!rootfileEl) throw new Error('Invalid EPUB: rootfile not found');
+  const opfPath = rootfileEl.getAttribute('full-path');
+  if (!opfPath) throw new Error('Invalid EPUB: OPF path missing');
+  let opfFile = zip.file(opfPath);
+  if (!opfFile) {
+    const k = Object.keys(zip.files).find(p => p === opfPath || p.endsWith(opfPath));
+    if (k) opfFile = zip.file(k);
+  }
+  if (!opfFile) throw new Error(`Invalid EPUB: ${opfPath} not found`);
+  onProgress({ status: 'parsing EPUB metadata', progress: 0.2 });
+  const opfText = await opfFile.async('text');
+  const opfDoc = new DOMParser().parseFromString(opfText, 'application/xml');
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+  const titleEl = opfDoc.querySelector('metadata > title, title');
+  const bookTitle = titleEl ? titleEl.textContent.trim() : '';
+  const manifest = {};
+  opfDoc.querySelectorAll('manifest > item').forEach(item => {
+    const id = item.getAttribute('id');
+    const href = item.getAttribute('href');
+    if (id && href) manifest[id] = href;
+  });
+  const spine = [];
+  opfDoc.querySelectorAll('spine > itemref').forEach(ref => {
+    const idref = ref.getAttribute('idref');
+    if (idref && manifest[idref]) spine.push(manifest[idref]);
+  });
+  if (!spine.length) throw new Error('Invalid EPUB: empty spine');
+  const mdParts = [];
+  for (let i = 0; i < spine.length; i++) {
+    if (cancelRequested) throw new Error('Cancelled');
+    onProgress({ status: `EPUB chapter ${i + 1}/${spine.length}`, progress: 0.2 + (i / spine.length) * 0.7 });
+    const href = spine[i];
+    const fullPath = opfDir + href;
+    let entry = zip.file(fullPath) || zip.file(decodeURIComponent(fullPath));
+    if (!entry) {
+      const found = Object.keys(zip.files).find(k => k.endsWith(href) || k.endsWith(decodeURIComponent(href)));
+      if (found) entry = zip.file(found);
+    }
+    if (!entry) continue;
+    let htmlText;
+    try {
+      htmlText = await entry.async('text');
+    } catch { continue; }
+    const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+    const body = doc.body || doc.documentElement;
+    if (!body) continue;
+    const md = htmlToMarkdown(body);
+    if (!md.trim()) continue;
+    const chapterTitle = (doc.querySelector('title')?.textContent?.trim() || '').slice(0, 120);
+    if (chapterTitle && i > 0 && !md.trim().startsWith('#')) {
+      mdParts.push(`## ${chapterTitle}\n\n${md}`);
+    } else {
+      mdParts.push(md);
+    }
+  }
+  const merged = mdParts.join('\n\n---\n\n');
+  if (!merged.trim()) throw new Error('EPUB had no extractable text');
+  return { raw: merged, md: P.collapseBlankLines(merged), conf: null, engine: 'epub', pages: spine.length, extra: bookTitle ? `title: ${bookTitle}` : `${spine.length} chapters` };
+}
+
+/* ---------------- MOBI parser (PalmDOC, no DRM, MOBI6) ----------------
+   Based on foliate-js MOBI implementation (MIT) for PalmDOC decompression
+   and trailing-entry stripping. Supports compression types 1 (none) and 2 (PalmDOC).
+   Huffman (17480) / KF8 are detected and reported with helpful message.
+*/
+function mobiCountBitsSet(x) {
+  let c = 0;
+  for (; x > 0; x >>>= 1) if (x & 1) c++;
+  return c;
+}
+function mobiGetVarLenFromEnd(arr) {
+  let value = 0;
+  const start = Math.max(0, arr.length - 4);
+  const slice = arr.subarray(start);
+  for (const byte of slice) {
+    if (byte & 0x80) value = 0;
+    value = (value << 7) | (byte & 0x7F);
+  }
+  return value;
+}
+function mobiDecompressPalmDOC(arr) {
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    const b = arr[i];
+    if (b === 0) {
+      out.push(0);
+    } else if (b >= 1 && b <= 8) {
+      const end = i + b;
+      for (let j = i + 1; j <= end && j < arr.length; j++) out.push(arr[j]);
+      i = end;
+    } else if (b < 0x80) {
+      out.push(b);
+    } else if (b < 0xC0) {
+      if (i + 1 >= arr.length) break;
+      const b2 = arr[i + 1];
+      const combined = (b << 8) | b2;
+      const distance = (combined & 0x3FFF) >>> 3;
+      const length = (combined & 7) + 3;
+      const dist = distance || 1;
+      for (let j = 0; j < length; j++) {
+        const srcIdx = out.length - dist;
+        out.push(srcIdx >= 0 ? out[srcIdx] : 0);
+      }
+      i++;
+    } else {
+      out.push(32, b ^ 0x80);
+    }
+  }
+  return Uint8Array.from(out);
+}
+
+async function convertMOBIFile(file, onProgress) {
+  onProgress({ status: 'parsing MOBI header', progress: 0.05 });
+  const buf = await file.arrayBuffer();
+  const view = new DataView(buf);
+  const getUint16BE = (off) => view.getUint16(off, false);
+  const getUint32BE = (off) => view.getUint32(off, false);
+  if (buf.byteLength < 78) throw new Error('Invalid MOBI: too small');
+  const numRecords = getUint16BE(76);
+  if (numRecords === 0) throw new Error('Invalid MOBI: no records');
+  const offsets = [];
+  for (let i = 0; i < numRecords; i++) {
+    const off = 78 + i * 8;
+    if (off + 4 > buf.byteLength) break;
+    offsets.push(getUint32BE(off));
+  }
+  if (offsets.length < 1) throw new Error('Invalid MOBI: missing record offsets');
+  const getRecord = (idx) => {
+    if (idx < 0 || idx >= offsets.length) throw new Error('Record out of bounds');
+    const start = offsets[idx];
+    const end = idx + 1 < offsets.length ? offsets[idx + 1] : buf.byteLength;
+    if (start > buf.byteLength || end > buf.byteLength || start >= end) return new Uint8Array();
+    return new Uint8Array(buf.slice(start, end));
+  };
+  const rec0 = getRecord(0);
+  if (rec0.length < 32) throw new Error('Invalid MOBI: record 0 too small');
+  const rec0View = new DataView(rec0.buffer, rec0.byteOffset, rec0.byteLength);
+  const compression = rec0View.getUint16(0, false);
+  const numTextRecords = rec0View.getUint16(8, false);
+  const encryption = rec0View.getUint16(12, false);
+  if (encryption !== 0) throw new Error('DRM-protected MOBI not supported — remove DRM or use EPUB');
+  const magic = new TextDecoder().decode(rec0.slice(16, 20));
+  if (magic !== 'MOBI') {
+    throw new Error('Invalid MOBI: missing MOBI header');
+  }
+  const encodingVal = rec0View.getUint32(28, false);
+  const titleOffset = rec0View.getUint32(84, false);
+  const titleLength = rec0View.getUint32(88, false);
+  const trailingFlags = rec0View.getUint32(240, false);
+  const version = rec0View.getUint32(36, false);
+
+  let decoder;
+  if (encodingVal === 65001) decoder = new TextDecoder('utf-8');
+  else if (encodingVal === 1252) decoder = new TextDecoder('windows-1252');
+  else decoder = new TextDecoder('utf-8');
+
+  let bookTitle = '';
+  try {
+    if (titleOffset && titleLength && titleOffset + titleLength <= rec0.length) {
+      bookTitle = decoder.decode(rec0.slice(titleOffset, titleOffset + titleLength)).trim();
+    }
+  } catch {}
+
+  const multibyte = trailingFlags & 1;
+  const numTrailing = mobiCountBitsSet(trailingFlags >>> 1);
+  const removeTrailing = (arr) => {
+    let a = arr;
+    for (let i = 0; i < numTrailing; i++) {
+      const len = mobiGetVarLenFromEnd(a);
+      if (len <= 0 || len > a.length) break;
+      a = a.subarray(0, a.length - len);
+    }
+    if (multibyte) {
+      if (a.length > 0) {
+        const len = (a[a.length - 1] & 0b11) + 1;
+        if (len <= a.length) a = a.subarray(0, a.length - len);
+      }
+    }
+    return a;
+  };
+
+  let decompress;
+  if (compression === 1) decompress = (x) => x;
+  else if (compression === 2) decompress = mobiDecompressPalmDOC;
+  else if (compression === 17480) {
+    throw new Error('This MOBI uses Huffman (Huff/CDIC) compression / KF8/AZW3 format — not yet supported. Please convert to EPUB with Calibre (free) or use an EPUB version. Older PalmDOC MOBI files work directly.');
+  } else {
+    throw new Error(`Unsupported MOBI compression ${compression}`);
+  }
+
+  onProgress({ status: 'decompressing MOBI text', progress: 0.2 });
+  let fullText = '';
+  const totalRecords = numTextRecords || (numRecords - 1);
+  for (let i = 0; i < totalRecords; i++) {
+    if (cancelRequested) throw new Error('Cancelled');
+    if (i % 20 === 0) {
+      onProgress({ status: `MOBI record ${i + 1}/${totalRecords}`, progress: 0.2 + (i / totalRecords) * 0.6 });
+    }
+    const rec = getRecord(1 + i);
+    if (!rec.length) continue;
+    let data = removeTrailing(rec);
+    let decompressed;
+    try {
+      decompressed = decompress(data);
+    } catch {
+      try { decompressed = decompress(rec); } catch { continue; }
+    }
+    try {
+      fullText += decoder.decode(decompressed);
+    } catch {
+      fullText += new TextDecoder('windows-1252').decode(decompressed);
+    }
+    if (fullText.length > 20_000_000) break;
+  }
+
+  if (!fullText.trim()) throw new Error('MOBI had no extractable text — may be KF8/AZW3 only. Convert to EPUB with Calibre.');
+
+  if (version >= 8 && fullText.trim().length < 500) {
+    throw new Error('This appears to be a KF8/AZW3-only MOBI (no MOBI6 fallback). Please convert to EPUB with Calibre (free) or use an EPUB version.');
+  }
+
+  onProgress({ status: 'converting to Markdown', progress: 0.85 });
+  let md;
+  if (/<html|<body|<p\s|<div\s|<h[1-6]/i.test(fullText)) {
+    const doc = new DOMParser().parseFromString(fullText, 'text/html');
+    md = htmlToMarkdown(doc.body || doc.documentElement);
+  } else {
+    md = P.plainTextToMarkdown(fullText);
+  }
+  if (!md.trim()) throw new Error('MOBI had no extractable text after Markdown conversion');
+  return { raw: fullText.slice(0, 500000), md: P.collapseBlankLines(md), conf: null, engine: 'mobi', pages: totalRecords, extra: bookTitle ? `title: ${bookTitle}` : `${totalRecords} records` };
+}
+
 async function convertTextFile(file, kind) {
   const text = await file.text();
   if (kind === 'csv') {
@@ -1078,6 +1326,8 @@ function kindOf(file) {
   if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext) || file.type.startsWith('image/')) return 'image';
   if (ext === 'pdf' || file.type === 'application/pdf') return 'pdf';
   if (ext === 'docx' || file.type.includes('wordprocessingml')) return 'docx';
+  if (ext === 'epub' || file.type === 'application/epub+zip' || file.type.includes('epub')) return 'epub';
+  if (ext === 'mobi' || ext === 'azw' || ext === 'azw3' || file.type.includes('mobi')) return 'mobi';
   if (ext === 'csv') return 'csv';
   if (ext === 'txt' || file.type === 'text/plain') return 'txt';
   return 'unknown';
@@ -1138,6 +1388,8 @@ async function runFiles(files) {
       if (kind === 'image') r = await convertImageFile(file, p => { progress(p); msg(p.status || ''); });
       else if (kind === 'pdf') r = await convertPDFFile(file, p => { progress(p); msg(p.status || ''); });
       else if (kind === 'docx') r = await convertDOCXFile(file, p => { progress(p); msg(p.status || ''); });
+      else if (kind === 'epub') r = await convertEPUBFile(file, p => { progress(p); msg(p.status || ''); });
+      else if (kind === 'mobi') r = await convertMOBIFile(file, p => { progress(p); msg(p.status || ''); });
       else if (kind === 'csv' || kind === 'txt') r = await convertTextFile(file, kind);
       else throw new Error(`Unsupported file type: ${file.name}`);
       const titleStem = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
