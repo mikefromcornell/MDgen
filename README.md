@@ -8,7 +8,7 @@ Paste a screenshot (`Ctrl/Cmd+V`), drop a file, or pick one — get clean,
 token-efficient GitHub-flavored Markdown with YAML front matter, ready to paste
 into ChatGPT / Claude / Gemini or upload as a `.md`.
 
-`PNG · JPG · WEBP · GIF · BMP · PDF · DOCX · TXT · CSV → .md`
+`PNG · JPG · WEBP · GIF · BMP · PDF · DOCX · TXT · CSV · EPUB · MOBI → .md`
 
 ![MIT](https://img.shields.io/badge/license-MIT-blue) ![cost](https://img.shields.io/badge/cost-%240-brightgreen) ![build](https://img.shields.io/badge/build%20step-none-brightgreen) ![offline](https://img.shields.io/badge/offline-PWA-blueviolet)
 
@@ -56,6 +56,7 @@ editable in Settings.
   fallback for scans — merged with `## Page N` separators
 - **DOCX** (mammoth), **TXT**, **CSV** → GFM tables (delimiter auto-detect, first
   200 rows + truncation note)
+- **EPUB** (chapters → Markdown with `---` separators, via JSZip + HTML→MD) and **MOBI** (PalmDOC, no DRM, MOBI6 – Huffman/KF8 detected with helpful message)
 - **Markdown Studio**: editable output + sanitized live preview, YAML front
   matter toggle, title field
 - **One-click cleanup**: fix heading hierarchy, normalize lists, tidy tables,
@@ -71,9 +72,6 @@ editable in Settings.
   searchable
 - **Dark / light / auto** theme, keyboard shortcuts, WCAG-minded, mobile-friendly
 - **PWA**: installable, local OCR works fully offline
-- **`portfolio-context/`**: optional template + GitHub Action that keeps daily
-  stock quotes fresh in Markdown/CSV/JSON you can **link from any AI chat** —
-  see [portfolio-context/README.md](portfolio-context/README.md)
 
 ## Use it
 
@@ -130,8 +128,6 @@ index.html · styles.css · app.js      — the whole app (vanilla, no build)
 manifest.json · sw.js                 — PWA/offline
 vendor/                               — tesseract.js, pdf.js, mammoth, jszip, marked, DOMPurify
                                         (+ versions & licenses in vendor/LICENSES.md)
-portfolio-context/                    — linkable portfolio context + daily quotes Action
-.github/workflows/portfolio-quotes.yml
 docs/PRD-original.md · PRD.md         — product docs
 tests/                                — unit tests (no deps) + optional Playwright e2e
 robots.txt · sitemap.xml · .nojekyll · LICENSE (MIT)
@@ -175,7 +171,7 @@ audio → transcript MD. PRs welcome.
 [JSZip](https://github.com/Stuk/jszip) (MIT) ·
 [marked](https://github.com/markedjs/marked) (MIT) ·
 [DOMPurify](https://github.com/cure53/DOMPurify) (Apache-2.0/MPL-2.0) ·
-[Stooq](https://stooq.com) keyless quotes ·
+MOBI PalmDOC logic from [foliate-js](https://github.com/johnfactotum/foliate-js) (MIT) ·
 tessdata from [tesseract-ocr](https://github.com/tesseract-ocr/tessdata_fast).
 
 ## License
